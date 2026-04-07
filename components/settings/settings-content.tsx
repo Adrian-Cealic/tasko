@@ -7,9 +7,96 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useTheme } from "@/components/theme-provider"
+import { useState, useEffect } from "react"
+import { createClient } from "@/lib/supabase/client"
+import { Loader2 } from "lucide-react"
 
 export function SettingsContent() {
   const { theme, setTheme } = useTheme()
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveMessage, setSaveMessage] = useState("")
+  const [fullName, setFullName] = useState("")
+  const [email, setEmail] = useState("")
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
+  const supabase = createClient()
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) {
+        setIsLoading(false)
+        return
+      }
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("full_name, email, avatar_url")
+        .eq("id", user.id)
+        .single()
+
+      if (profile) {
+        setFullName(profile.full_name || "")
+        setEmail(profile.email || user.email || "")
+        setAvatarUrl(profile.avatar_url)
+      } else {
+        setFullName(user.user_metadata?.full_name || "")
+        setEmail(user.email || "")
+      }
+      setIsLoading(false)
+    }
+
+    fetchProfile()
+  }, [])
+
+  const handleSave = async () => {
+    setIsSaving(true)
+    setSaveMessage("")
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      setIsSaving(false)
+      return
+    }
+
+    const { error } = await supabase
+      .from("profiles")
+      .upsert({
+        id: user.id,
+        full_name: fullName,
+        email: email,
+        avatar_url: avatarUrl,
+      })
+
+    if (error) {
+      setSaveMessage("Failed to save changes. Please try again.")
+    } else {
+      setSaveMessage("Changes saved successfully!")
+    }
+
+    setIsSaving(false)
+    setTimeout(() => setSaveMessage(""), 3000)
+  }
+
+  const getInitials = () => {
+    if (fullName) {
+      return fullName
+        .split(" ")
+        .map((n) => n[0])
+        .join("")
+        .toUpperCase()
+        .slice(0, 2)
+    }
+    return email.slice(0, 2).toUpperCase()
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6 animate-fade-in max-w-4xl">
@@ -18,11 +105,10 @@ export function SettingsContent() {
         <div className="space-y-6">
           <div className="flex items-center gap-4">
             <Avatar className="w-20 h-20">
-              <AvatarImage src="/profile.jpg" alt="Jessin Sam" />
-              <AvatarFallback>JS</AvatarFallback>
+              {avatarUrl && <AvatarImage src={avatarUrl} alt={fullName} />}
+              <AvatarFallback className="text-lg">{getInitials()}</AvatarFallback>
             </Avatar>
             <div>
-              <Button variant="outline">Change Photo</Button>
               <p className="text-xs text-muted-foreground mt-2">JPG, PNG or GIF. Max size 2MB</p>
             </div>
           </div>
@@ -30,15 +116,44 @@ export function SettingsContent() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="name">Full Name</Label>
-              <Input id="name" defaultValue="Jessin Sam" />
+              <Input
+                id="name"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" defaultValue="jessin@gmail.com" />
+              <Input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
             </div>
           </div>
 
-          <Button className="bg-primary hover:bg-primary/90">Save Changes</Button>
+          <div className="flex items-center gap-3">
+            <Button
+              className="bg-primary hover:bg-primary/90"
+              onClick={handleSave}
+              disabled={isSaving}
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                "Save Changes"
+              )}
+            </Button>
+            {saveMessage && (
+              <span className={`text-sm ${saveMessage.includes("Failed") ? "text-destructive" : "text-emerald-600"}`}>
+                {saveMessage}
+              </span>
+            )}
+          </div>
         </div>
       </Card>
 

@@ -9,9 +9,8 @@ const _geist = Geist({ subsets: ["latin"] })
 const _geistMono = Geist_Mono({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "Donezo - Project Management Dashboard",
+  title: "Tasko - Project Management Dashboard",
   description: "Plan, prioritize, and accomplish your tasks with ease",
-  generator: "v0.app",
   icons: {
     icon: [
       {
@@ -22,12 +21,7 @@ export const metadata: Metadata = {
         url: "/icon-dark-32x32.png",
         media: "(prefers-color-scheme: dark)",
       },
-      {
-        url: "/icon.svg",
-        type: "image/svg+xml",
-      },
     ],
-    apple: "/apple-icon.png",
   },
 }
 

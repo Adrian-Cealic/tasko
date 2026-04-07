@@ -12,11 +12,6 @@ export default function TasksPage() {
         <Header
           title="Tasks"
           description="Manage and organize your tasks efficiently."
-          actions={
-            <Button className="w-full sm:w-auto h-9 text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-all duration-300 hover:shadow-lg hover:shadow-primary/30 hover:scale-105">
-              + Add Task
-            </Button>
-          }
         />
 
         <div className="mt-6">

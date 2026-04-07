@@ -2,13 +2,14 @@
 
 import { LayoutDashboard, CheckSquare, Calendar, BarChart3, Users, Settings, HelpCircle, LogOut } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
+import { createClient } from "@/lib/supabase/client"
 
 const menuItems = [
   { icon: LayoutDashboard, label: "Dashboard", href: "/" },
-  { icon: CheckSquare, label: "Tasks", badge: "124", href: "/tasks" },
+  { icon: CheckSquare, label: "Tasks", href: "/tasks", hasBadge: true },
   { icon: Calendar, label: "Calendar", href: "/calendar" },
   { icon: BarChart3, label: "Analytics", href: "/analytics" },
   { icon: Users, label: "Team", href: "/team" },
@@ -22,7 +23,25 @@ const generalItems = [
 
 export function Sidebar() {
   const [hoveredItem, setHoveredItem] = useState<string | null>(null)
+  const [taskCount, setTaskCount] = useState<number | null>(null)
   const pathname = usePathname()
+  const supabase = createClient()
+
+  useEffect(() => {
+    const fetchTaskCount = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const { count } = await supabase
+        .from("tasks")
+        .select("*", { count: "exact", head: true })
+        .eq("completed", false)
+
+      if (count !== null) setTaskCount(count)
+    }
+
+    fetchTaskCount()
+  }, [])
 
   return (
     <aside className="fixed top-0 left-0 w-64 bg-card border-r border-border p-4 h-screen overflow-y-auto lg:block">
@@ -65,9 +84,14 @@ export function Sidebar() {
                 >
                   <item.icon className="w-4 h-4" />
                   <span className="text-sm">{item.label}</span>
-                  {item.badge && (
-                    <span className="ml-auto bg-primary text-primary-foreground text-[10px] font-semibold px-1.5 py-0.5 rounded-full animate-pulse">
-                      {item.badge}
+                  {item.hasBadge && taskCount !== null && taskCount > 0 && (
+                    <span className={cn(
+                      "ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded-full",
+                      isActive
+                        ? "bg-primary-foreground/20 text-primary-foreground"
+                        : "bg-primary text-primary-foreground"
+                    )}>
+                      {taskCount}
                     </span>
                   )}
                 </Link>
