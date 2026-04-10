@@ -5,8 +5,25 @@ import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Search, Filter, Calendar, Tag, Plus, Loader2, Trash2, Pencil } from "lucide-react"
-import { useState, useEffect } from "react"
+import { Progress } from "@/components/ui/progress"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import {
+  Search,
+  Filter,
+  Calendar,
+  Tag,
+  Plus,
+  Loader2,
+  Trash2,
+  Pencil,
+  ChevronRight,
+  ListTree,
+} from "lucide-react"
+import { useState, useEffect, useMemo, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
 import {
   Dialog,
@@ -33,6 +50,7 @@ interface Task {
   due_date: string | null
   tags: string[]
   project_id: string | null
+  parent_id: string | null
   created_at: string
 }
 
@@ -67,9 +85,12 @@ export function TasksContent() {
   const [isLoading, setIsLoading] = useState(true)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [isEditOpen, setIsEditOpen] = useState(false)
+  const [isSubtaskOpen, setIsSubtaskOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
+  const [subtaskParentId, setSubtaskParentId] = useState<string | null>(null)
   const [formData, setFormData] = useState<TaskFormData>(emptyForm)
+  const [expandedTasks, setExpandedTasks] = useState<Set<string>>(new Set())
 
   const supabase = createClient()
 
@@ -107,6 +128,45 @@ export function TasksContent() {
     }
   }
 
+  const parentTasks = useMemo(
+    () => tasks.filter(t => !t.parent_id),
+    [tasks],
+  )
+
+  const subtasksByParent = useMemo(() => {
+    const map = new Map<string, Task[]>()
+    for (const task of tasks) {
+      if (task.parent_id) {
+        const existing = map.get(task.parent_id) || []
+        existing.push(task)
+        map.set(task.parent_id, existing)
+      }
+    }
+    return map
+  }, [tasks])
+
+  const getSubtaskProgress = useCallback(
+    (parentId: string) => {
+      const subs = subtasksByParent.get(parentId) || []
+      if (subs.length === 0) return null
+      const completed = subs.filter(s => s.completed).length
+      return { completed, total: subs.length, percent: Math.round((completed / subs.length) * 100) }
+    },
+    [subtasksByParent],
+  )
+
+  const toggleExpanded = (taskId: string) => {
+    setExpandedTasks(prev => {
+      const next = new Set(prev)
+      if (next.has(taskId)) {
+        next.delete(taskId)
+      } else {
+        next.add(taskId)
+      }
+      return next
+    })
+  }
+
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsSubmitting(true)
@@ -125,6 +185,7 @@ export function TasksContent() {
       due_date: formData.due_date || null,
       project_id: formData.project_id || null,
       tags: formData.tags ? formData.tags.split(",").map(t => t.trim()) : [],
+      parent_id: null,
     })
 
     if (!error) {
@@ -133,6 +194,50 @@ export function TasksContent() {
       fetchTasks()
     }
     setIsSubmitting(false)
+  }
+
+  const handleCreateSubtask = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!subtaskParentId) return
+    setIsSubmitting(true)
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      setIsSubmitting(false)
+      return
+    }
+
+    const parent = tasks.find(t => t.id === subtaskParentId)
+
+    const { error } = await supabase.from("tasks").insert({
+      user_id: user.id,
+      title: formData.title,
+      description: formData.description || null,
+      priority: formData.priority,
+      due_date: formData.due_date || null,
+      project_id: formData.project_id || parent?.project_id || null,
+      tags: formData.tags ? formData.tags.split(",").map(t => t.trim()) : [],
+      parent_id: subtaskParentId,
+    })
+
+    if (!error) {
+      setFormData(emptyForm)
+      setIsSubtaskOpen(false)
+      setSubtaskParentId(null)
+      setExpandedTasks(prev => new Set(prev).add(subtaskParentId))
+      fetchTasks()
+    }
+    setIsSubmitting(false)
+  }
+
+  const openSubtaskDialog = (parentId: string) => {
+    const parent = tasks.find(t => t.id === parentId)
+    setSubtaskParentId(parentId)
+    setFormData({
+      ...emptyForm,
+      project_id: parent?.project_id || "",
+    })
+    setIsSubtaskOpen(true)
   }
 
   const openEditDialog = (task: Task) => {
@@ -199,49 +304,56 @@ export function TasksContent() {
 
   const deleteTask = async (taskId: string) => {
     await supabase.from("tasks").delete().eq("id", taskId)
-    setTasks(tasks.filter(t => t.id !== taskId))
+    setTasks(tasks.filter(t => t.id !== taskId && t.parent_id !== taskId))
   }
 
   const getProjectName = (projectId: string | null) => {
-    if (!projectId) return "No Project"
+    if (!projectId) return null
     const project = projects.find(p => p.id === projectId)
-    return project?.name || "Unknown Project"
+    return project?.name || null
   }
 
-  const filteredTasks = tasks
+  const filteredParentTasks = parentTasks
     .filter(task => {
-      if (filter === "completed") return task.completed
-      if (filter === "active") return !task.completed
-      return true
+      const subs = subtasksByParent.get(task.id) || []
+      const matchesFilter =
+        filter === "all" ||
+        (filter === "completed" && task.completed) ||
+        (filter === "active" && !task.completed)
+      const matchesSearch =
+        task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        subs.some(s => s.title.toLowerCase().includes(searchQuery.toLowerCase()))
+      return matchesFilter && matchesSearch
     })
-    .filter(task =>
-      task.title.toLowerCase().includes(searchQuery.toLowerCase())
-    )
+
+  const rootCount = parentTasks.length
+  const activeRootCount = parentTasks.filter(t => !t.completed).length
+  const completedRootCount = parentTasks.filter(t => t.completed).length
 
   const renderTaskForm = (onSubmit: (e: React.FormEvent) => void, submitLabel: string) => (
     <form onSubmit={onSubmit}>
       <FieldGroup>
         <Field>
-          <FieldLabel htmlFor="task-title">Title</FieldLabel>
+          <FieldLabel htmlFor="task-title">Titlu</FieldLabel>
           <Input
             id="task-title"
             value={formData.title}
             onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-            placeholder="Task title"
+            placeholder="Denumirea task-ului"
             required
           />
         </Field>
         <Field>
-          <FieldLabel htmlFor="task-description">Description</FieldLabel>
+          <FieldLabel htmlFor="task-description">Descriere</FieldLabel>
           <Input
             id="task-description"
             value={formData.description}
             onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-            placeholder="Task description (optional)"
+            placeholder="Descriere (opțional)"
           />
         </Field>
         <Field>
-          <FieldLabel htmlFor="task-priority">Priority</FieldLabel>
+          <FieldLabel htmlFor="task-priority">Prioritate</FieldLabel>
           <Select
             value={formData.priority}
             onValueChange={(value: "High" | "Medium" | "Low") =>
@@ -259,7 +371,7 @@ export function TasksContent() {
           </Select>
         </Field>
         <Field>
-          <FieldLabel htmlFor="task-due_date">Due Date</FieldLabel>
+          <FieldLabel htmlFor="task-due_date">Deadline</FieldLabel>
           <Input
             id="task-due_date"
             type="date"
@@ -268,13 +380,13 @@ export function TasksContent() {
           />
         </Field>
         <Field>
-          <FieldLabel htmlFor="task-project">Project</FieldLabel>
+          <FieldLabel htmlFor="task-project">Proiect</FieldLabel>
           <Select
             value={formData.project_id}
             onValueChange={(value) => setFormData({ ...formData, project_id: value })}
           >
             <SelectTrigger>
-              <SelectValue placeholder="Select a project" />
+              <SelectValue placeholder="Selectează proiect" />
             </SelectTrigger>
             <SelectContent>
               {projects.map(project => (
@@ -286,19 +398,19 @@ export function TasksContent() {
           </Select>
         </Field>
         <Field>
-          <FieldLabel htmlFor="task-tags">Tags</FieldLabel>
+          <FieldLabel htmlFor="task-tags">Tag-uri</FieldLabel>
           <Input
             id="task-tags"
             value={formData.tags}
             onChange={(e) => setFormData({ ...formData, tags: e.target.value })}
-            placeholder="Comma separated tags"
+            placeholder="Tag-uri separate prin virgulă"
           />
         </Field>
         <Button type="submit" className="w-full" disabled={isSubmitting}>
           {isSubmitting ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Saving...
+              Se salvează...
             </>
           ) : (
             submitLabel
@@ -306,6 +418,63 @@ export function TasksContent() {
         </Button>
       </FieldGroup>
     </form>
+  )
+
+  const renderSubtaskRow = (subtask: Task) => (
+    <div
+      key={subtask.id}
+      className="group/subtask flex items-center gap-3 rounded-lg border border-transparent px-3 py-2.5 transition-all hover:border-border hover:bg-muted/50"
+    >
+      <Checkbox
+        checked={subtask.completed}
+        onCheckedChange={() => toggleTaskCompletion(subtask.id, subtask.completed)}
+        className="shrink-0"
+      />
+      <div className="flex-1 min-w-0">
+        <p className={`text-sm font-medium truncate ${subtask.completed ? "line-through text-muted-foreground" : "text-foreground"}`}>
+          {subtask.title}
+        </p>
+        {subtask.description && (
+          <p className="text-xs text-muted-foreground truncate mt-0.5">{subtask.description}</p>
+        )}
+      </div>
+      <div className="flex items-center gap-1 opacity-0 group-hover/subtask:opacity-100 transition-opacity">
+        <Badge
+          variant={subtask.priority === "High" ? "destructive" : subtask.priority === "Medium" ? "default" : "secondary"}
+          className="text-[10px] px-1.5 py-0"
+        >
+          {subtask.priority}
+        </Badge>
+        {subtask.due_date && (
+          <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
+            <Calendar className="w-3 h-3" />
+            {new Date(subtask.due_date).toLocaleDateString("ro-RO")}
+          </span>
+        )}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 text-muted-foreground hover:text-primary"
+          onClick={(e) => {
+            e.stopPropagation()
+            openEditDialog(subtask)
+          }}
+        >
+          <Pencil className="w-3 h-3" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 text-muted-foreground hover:text-destructive"
+          onClick={(e) => {
+            e.stopPropagation()
+            deleteTask(subtask.id)
+          }}
+        >
+          <Trash2 className="w-3 h-3" />
+        </Button>
+      </div>
+    </div>
   )
 
   if (isLoading) {
@@ -322,17 +491,13 @@ export function TasksContent() {
         <div className="flex-1 relative">
           <Search className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Search tasks..."
+            placeholder="Caută task-uri..."
             className="pl-10"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" className="gap-2 bg-transparent">
-            <Filter className="w-4 h-4" />
-            Filter
-          </Button>
           <Dialog open={isCreateOpen} onOpenChange={(open) => {
             setIsCreateOpen(open)
             if (!open) setFormData(emptyForm)
@@ -340,14 +505,14 @@ export function TasksContent() {
             <DialogTrigger asChild>
               <Button className="gap-2">
                 <Plus className="w-4 h-4" />
-                Add Task
+                Task Nou
               </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Create New Task</DialogTitle>
+                <DialogTitle>Creează Task</DialogTitle>
               </DialogHeader>
-              {renderTaskForm(handleCreateTask, "Create Task")}
+              {renderTaskForm(handleCreateTask, "Creează")}
             </DialogContent>
           </Dialog>
         </div>
@@ -355,110 +520,180 @@ export function TasksContent() {
 
       <div className="flex gap-2">
         <Button variant={filter === "all" ? "default" : "outline"} onClick={() => setFilter("all")} size="sm">
-          All ({tasks.length})
+          Toate ({rootCount})
         </Button>
         <Button variant={filter === "active" ? "default" : "outline"} onClick={() => setFilter("active")} size="sm">
-          Active ({tasks.filter((t) => !t.completed).length})
+          Active ({activeRootCount})
         </Button>
         <Button
           variant={filter === "completed" ? "default" : "outline"}
           onClick={() => setFilter("completed")}
           size="sm"
         >
-          Completed ({tasks.filter((t) => t.completed).length})
+          Finalizate ({completedRootCount})
         </Button>
       </div>
 
-      {filteredTasks.length === 0 ? (
+      {filteredParentTasks.length === 0 ? (
         <Card className="p-8 text-center">
           <p className="text-muted-foreground">
             {tasks.length === 0
-              ? "No tasks yet. Create your first task to get started!"
-              : "No tasks match your current filter."}
+              ? "Nu ai niciun task. Creează primul tău task!"
+              : "Niciun task nu corespunde filtrului curent."}
           </p>
         </Card>
       ) : (
-        <div className="grid gap-4">
-          {filteredTasks.map((task, index) => (
-            <Card
-              key={task.id}
-              className="p-4 hover:shadow-lg transition-all duration-300 cursor-pointer animate-slide-in"
-              style={{ animationDelay: `${index * 50}ms` }}
-              onClick={() => openEditDialog(task)}
-            >
-              <div className="flex items-start gap-4">
-                <Checkbox
-                  checked={task.completed}
-                  onCheckedChange={() => toggleTaskCompletion(task.id, task.completed)}
-                  onClick={(e) => e.stopPropagation()}
-                  className="mt-1"
-                />
-                <div className="flex-1 space-y-2">
-                  <div className="flex items-start justify-between gap-4">
-                    <h3 className={`font-semibold text-foreground ${task.completed ? "line-through opacity-60" : ""}`}>
-                      {task.title}
-                    </h3>
-                    <div className="flex items-center gap-1">
-                      <Badge
-                        variant={
-                          task.priority === "High" ? "destructive" : task.priority === "Medium" ? "default" : "secondary"
-                        }
-                        className="shrink-0"
-                      >
-                        {task.priority}
-                      </Badge>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-muted-foreground hover:text-primary"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          openEditDialog(task)
-                        }}
-                      >
-                        <Pencil className="w-4 h-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          deleteTask(task.id)
-                        }}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
+        <div className="grid gap-3">
+          {filteredParentTasks.map((task, index) => {
+            const progress = getSubtaskProgress(task.id)
+            const subs = subtasksByParent.get(task.id) || []
+            const isExpanded = expandedTasks.has(task.id)
+            const projectName = getProjectName(task.project_id)
+
+            return (
+              <Collapsible
+                key={task.id}
+                open={isExpanded}
+                onOpenChange={() => toggleExpanded(task.id)}
+              >
+                <Card
+                  className="overflow-hidden transition-all duration-300 animate-slide-in"
+                  style={{ animationDelay: `${index * 50}ms` }}
+                >
+                  <div className="p-4">
+                    <div className="flex items-start gap-3">
+                      <Checkbox
+                        checked={task.completed}
+                        onCheckedChange={() => toggleTaskCompletion(task.id, task.completed)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="mt-1 shrink-0"
+                      />
+
+                      <div className="flex-1 min-w-0 space-y-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-center gap-2 min-w-0">
+                            {subs.length > 0 && (
+                              <CollapsibleTrigger asChild>
+                                <button className="shrink-0 rounded-md p-0.5 hover:bg-muted transition-colors">
+                                  <ChevronRight
+                                    className={`w-4 h-4 text-muted-foreground transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`}
+                                  />
+                                </button>
+                              </CollapsibleTrigger>
+                            )}
+                            <h3
+                              className={`font-semibold text-foreground truncate cursor-pointer hover:text-primary transition-colors ${task.completed ? "line-through opacity-60" : ""}`}
+                              onClick={() => openEditDialog(task)}
+                            >
+                              {task.title}
+                            </h3>
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            <Badge
+                              variant={task.priority === "High" ? "destructive" : task.priority === "Medium" ? "default" : "secondary"}
+                              className="shrink-0"
+                            >
+                              {task.priority}
+                            </Badge>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-primary"
+                              title="Adaugă sub-task"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                openSubtaskDialog(task.id)
+                              }}
+                            >
+                              <ListTree className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-primary"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                openEditDialog(task)
+                              }}
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                deleteTask(task.id)
+                              }}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        </div>
+
+                        {task.description && (
+                          <p className="text-sm text-muted-foreground">{task.description}</p>
+                        )}
+
+                        <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+                          {projectName && (
+                            <span className="flex items-center gap-1">
+                              <Tag className="w-4 h-4" />
+                              {projectName}
+                            </span>
+                          )}
+                          {task.due_date && (
+                            <span className="flex items-center gap-1">
+                              <Calendar className="w-4 h-4" />
+                              {new Date(task.due_date).toLocaleDateString("ro-RO")}
+                            </span>
+                          )}
+                        </div>
+
+                        {task.tags && task.tags.length > 0 && (
+                          <div className="flex gap-2">
+                            {task.tags.map((tag) => (
+                              <Badge key={tag} variant="outline" className="text-xs">
+                                {tag}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+
+                        {progress && (
+                          <div className="flex items-center gap-3 pt-1">
+                            <Progress value={progress.percent} className="h-1.5 flex-1" />
+                            <span className="text-xs text-muted-foreground font-medium shrink-0">
+                              {progress.completed}/{progress.total}
+                            </span>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
-                  {task.description && (
-                    <p className="text-sm text-muted-foreground">{task.description}</p>
+
+                  {subs.length > 0 && (
+                    <CollapsibleContent>
+                      <div className="border-t bg-muted/30 px-4 py-2 space-y-0.5">
+                        <div className="pl-7">
+                          {subs.map(renderSubtaskRow)}
+                          <button
+                            onClick={() => openSubtaskDialog(task.id)}
+                            className="flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm text-muted-foreground hover:text-primary hover:bg-muted/50 transition-colors"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            Adaugă sub-task
+                          </button>
+                        </div>
+                      </div>
+                    </CollapsibleContent>
                   )}
-                  <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-                    <span className="flex items-center gap-1">
-                      <Tag className="w-4 h-4" />
-                      {getProjectName(task.project_id)}
-                    </span>
-                    {task.due_date && (
-                      <span className="flex items-center gap-1">
-                        <Calendar className="w-4 h-4" />
-                        {new Date(task.due_date).toLocaleDateString()}
-                      </span>
-                    )}
-                  </div>
-                  {task.tags && task.tags.length > 0 && (
-                    <div className="flex gap-2">
-                      {task.tags.map((tag) => (
-                        <Badge key={tag} variant="outline" className="text-xs">
-                          {tag}
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </Card>
-          ))}
+                </Card>
+              </Collapsible>
+            )
+          })}
         </div>
       )}
 
@@ -471,9 +706,31 @@ export function TasksContent() {
       }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit Task</DialogTitle>
+            <DialogTitle>Editează Task</DialogTitle>
           </DialogHeader>
-          {renderTaskForm(handleEditTask, "Save Changes")}
+          {renderTaskForm(handleEditTask, "Salvează")}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isSubtaskOpen} onOpenChange={(open) => {
+        setIsSubtaskOpen(open)
+        if (!open) {
+          setSubtaskParentId(null)
+          setFormData(emptyForm)
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Adaugă Sub-task
+              {subtaskParentId && (
+                <span className="block text-sm font-normal text-muted-foreground mt-1">
+                  în „{tasks.find(t => t.id === subtaskParentId)?.title}"
+                </span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          {renderTaskForm(handleCreateSubtask, "Adaugă Sub-task")}
         </DialogContent>
       </Dialog>
     </div>
